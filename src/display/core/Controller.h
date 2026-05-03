@@ -6,6 +6,7 @@
 #include "PluginManager.h"
 #include "Settings.h"
 #include <WiFi.h>
+#include <atomic>
 #include <display/core/ProfileManager.h>
 #include <display/core/process/Process.h>
 #ifndef GAGGIMATE_HEADLESS
@@ -160,6 +161,8 @@ class Controller {
     bool updating = false;
     bool autotuning = false;
     bool isApConnection = false;
+    unsigned long lastWifiRetry = 0;
+    std::atomic<uint8_t> lastWifiDisconnectReason{WIFI_REASON_UNSPECIFIED};
     bool initialized = false;
     bool screenReady = false;
     bool waitingForController = false;

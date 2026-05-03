@@ -205,22 +205,35 @@ void Controller::setupInfos() {
 }
 
 void Controller::setupWifi() {
-    if (settings.getWifiSsid() != "" && settings.getWifiPassword() != "") {
+    const bool haveCredsOnEntry = settings.getWifiSsid() != "" && settings.getWifiPassword() != "";
+    ESP_LOGI(LOG_TAG, "[WIFI:STATE] state=BOOT haveCreds=%d", haveCredsOnEntry ? 1 : 0);
+
+    // Capture disconnect reason for any STA attempt — initial connect, background recovery
+    // retry, or a cred-write via the "Save" (no restart) settings path that promotes a
+    // creds-less AP-only boot into a retry-eligible state. Registered unconditionally and
+    // before any WiFi.begin() call so the very first disconnect event sees it.
+    // A second handler for the same event is registered below in the connected branch for
+    // plugin dispatch — Arduino-ESP32 appends rather than replaces, so both fire.
+    WiFi.onEvent([this](WiFiEvent_t, WiFiEventInfo_t info) { lastWifiDisconnectReason = info.wifi_sta_disconnected.reason; },
+                 WiFiEvent_t::ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
+
+    if (haveCredsOnEntry) {
         WiFi.setHostname(settings.getMdnsName().c_str());
         WiFi.mode(WIFI_STA);
         WiFi.setAutoReconnect(true);
         WiFi.config(INADDR_NONE, INADDR_NONE, INADDR_NONE, INADDR_NONE);
         WiFi.begin(settings.getWifiSsid(), settings.getWifiPassword());
         WiFi.setTxPower(WIFI_POWER_19_5dBm);
-        for (int attempts = 0; attempts < WIFI_CONNECT_ATTEMPTS; attempts++) {
-            if (WiFi.status() == WL_CONNECTED) {
-                break;
-            }
-            delay(500);
+        const unsigned long connectStart = millis();
+        while (WiFi.status() != WL_CONNECTED && millis() - connectStart < WIFI_CONNECT_TIMEOUT_MS) {
+            delay(250);
             Serial.print(".");
         }
         Serial.println("");
+        const unsigned long connectElapsed = millis() - connectStart;
         if (WiFi.status() == WL_CONNECTED) {
+            ESP_LOGI(LOG_TAG, "[WIFI:STATE] state=CONNECTED elapsed_ms=%lu ip=%s", connectElapsed,
+                     WiFi.localIP().toString().c_str());
             ESP_LOGI(LOG_TAG, "Connected to %s with IP address %s", settings.getWifiSsid().c_str(),
                      WiFi.localIP().toString().c_str());
             WiFi.onEvent([this](WiFiEvent_t, WiFiEventInfo_t) { pluginManager->trigger("controller:wifi:connect", "AP", 0); },
@@ -239,18 +252,33 @@ void Controller::setupWifi() {
             sntp_setservername(0, NTP_SERVER);
             sntp_init();
         } else {
-            WiFi.disconnect(true, true);
+            ESP_LOGI(LOG_TAG, "[WIFI:STATE] state=INITIAL_TIMEOUT elapsed_ms=%lu reason=%d", connectElapsed,
+                     static_cast<int>(lastWifiDisconnectReason));
             ESP_LOGI(LOG_TAG, "Timed out while connecting to WiFi");
             Serial.println("Timed out while connecting to WiFi");
         }
     }
     if (WiFi.status() != WL_CONNECTED) {
         isApConnection = true;
-        WiFi.mode(WIFI_AP);
+        // Settings haven't changed since the entry check, so reuse haveCredsOnEntry rather than re-reading NVS.
+        // Own the retry cadence: without this, the driver auto-retries STA every ~2.4s in AP_STA,
+        // which keeps the radio scanning, makes the softAP unjoinable (channel-hops during scan),
+        // and re-creates the radio-coexistence pressure that motivated the prior WifiManager revert.
+        WiFi.setAutoReconnect(false);
+        WiFi.mode(haveCredsOnEntry ? WIFI_AP_STA : WIFI_AP);
         WiFi.softAPConfig(WIFI_AP_IP, WIFI_AP_IP, WIFI_SUBNET_MASK);
         WiFi.softAP(WIFI_AP_SSID);
         WiFi.setTxPower(WIFI_POWER_19_5dBm);
-        ESP_LOGI(LOG_TAG, "Started WiFi AP %s", WIFI_AP_SSID);
+        if (haveCredsOnEntry) {
+            // Reset reason before the new attempt so the first gated retry sees this attempt's
+            // failure (or success) rather than stale reason from the initial connect window.
+            lastWifiDisconnectReason = WIFI_REASON_UNSPECIFIED;
+            // Keep STA active in the background so transient router/DHCP issues recover without manual intervention.
+            WiFi.begin(settings.getWifiSsid(), settings.getWifiPassword());
+        }
+        lastWifiRetry = millis();
+        ESP_LOGI(LOG_TAG, "[WIFI:STATE] state=AP_FALLBACK mode=%s", haveCredsOnEntry ? "AP_STA" : "AP");
+        ESP_LOGI(LOG_TAG, "Started WiFi AP %s%s", WIFI_AP_SSID, haveCredsOnEntry ? " (background STA retry active)" : "");
     }
 
     pluginManager->on("ota:update:start", [this](Event const &) { this->updating = true; });
@@ -267,6 +295,29 @@ void Controller::loop() {
     }
 
     unsigned long now = millis();
+
+    // Gate retries and self-restart on STANDBY so radio activity and reboots can never land mid-brew.
+    // Also suppress while an OTA is in progress — ESP.restart() mid-flash would brick the update.
+    if (isApConnection && mode == MODE_STANDBY && !updating && now - lastWifiRetry >= WIFI_AP_RETRY_INTERVAL_MS) {
+        lastWifiRetry = now;
+        if (WiFi.status() == WL_CONNECTED) {
+            ESP_LOGI(LOG_TAG, "[WIFI:STATE] state=RECOVERED action=restart");
+            ESP_LOGI(LOG_TAG, "Background STA recovered, rebooting to leave AP fallback");
+            delay(100); // let the log line flush before the radio resets
+            ESP.restart();
+        } else if (settings.getWifiSsid() != "" && settings.getWifiPassword() != "" &&
+                   lastWifiDisconnectReason != WIFI_REASON_AUTH_FAIL) {
+            // Only AUTH_FAIL is terminal: wrong password is recovered via the captive portal,
+            // which restarts on form submit. NO_AP_FOUND is *not* suppressed — it's the exact
+            // signal we're recovering from (router unavailable when the machine boots). A
+            // permanently renamed SSID also lands here and recovers via the captive portal,
+            // matching the wrong-password flow.
+            ESP_LOGI(LOG_TAG, "[WIFI:RETRY] result=ISSUED last_reason=%d", static_cast<int>(lastWifiDisconnectReason));
+            WiFi.begin(settings.getWifiSsid(), settings.getWifiPassword());
+        } else {
+            ESP_LOGI(LOG_TAG, "[WIFI:RETRY] result=SKIPPED last_reason=%d", static_cast<int>(lastWifiDisconnectReason));
+        }
+    }
 
     // If BLE scanning has been running for a while without finding the controller,
     // notify the UI so it can update the startup label accordingly.
@@ -668,8 +719,15 @@ int Controller::getMode() const { return mode; }
 
 void Controller::setMode(int newMode) {
     Event modeEvent = pluginManager->trigger("controller:mode:change", "value", newMode);
+    const int previousMode = mode;
     mode = modeEvent.getInt("value");
     steamReady = false;
+
+    // Reset the WiFi retry clock on entry to STANDBY so users whose default mode is BREW
+    // don't get an immediate retry the moment they tap to STANDBY after a long session.
+    if (mode == MODE_STANDBY && previousMode != MODE_STANDBY && isApConnection) {
+        lastWifiRetry = millis();
+    }
 
     updateLastAction();
     setTargetTemp(getTargetTemp());
