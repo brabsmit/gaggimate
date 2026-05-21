@@ -12,9 +12,11 @@ reintroduce the leak. This script reapplies the fix on every build. It is idempo
 the fix is already present (or the file/dependency is absent, e.g. the controller env)
 it does nothing.
 
-The canonical fix is recorded in patches/esp-arduino-ble-scales-buildhexdata-leak.patch.
-Remove this script + its extra_scripts line once the upstream fix lands in
-gaggimate/esp-arduino-ble-scales and the dependency is re-pinned to the merged commit.
+The canonical source fix is submitted upstream as gaggimate/esp-arduino-ble-scales#31.
+The BUGGY/FIXED strings below are the single in-repo source of truth: an exact-match
+swap fails loud (the warning branch) if the upstream source ever changes shape, which is
+the behavior we want for a build-time mutation of a dependency. Remove this script + its
+extra_scripts line once #31 lands and the dependency is re-pinned to the merged commit.
 """
 import os
 
