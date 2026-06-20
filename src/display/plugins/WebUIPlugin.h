@@ -37,6 +37,7 @@ class WebUIPlugin : public Plugin {
                              size_t len);
     void handleOTASettings(uint32_t clientId, JsonDocument &request);
     void handleOTAStart(uint32_t clientId, JsonDocument &request);
+    void handleOTACheck(uint32_t clientId, JsonDocument &request);
     void handleAutotuneStart(uint32_t clientId, JsonDocument &request);
     void handleProfileRequest(uint32_t clientId, JsonDocument &request);
     void handleFlushStart(uint32_t clientId, JsonDocument &request);
@@ -50,8 +51,9 @@ class WebUIPlugin : public Plugin {
     void handleBLEScaleScan(AsyncWebServerRequest *request);
     void handleBLEScaleConnect(AsyncWebServerRequest *request);
     void handleBLEScaleInfo(AsyncWebServerRequest *request);
-    void updateOTAStatus(const String &version);
+    void updateOTAStatus();
     void updateOTAProgress(uint8_t phase, int progress);
+    void emitOtaCheckResult(const char *status);
     void sendAutotuneResult();
     void sendAutotuneFailed();
 
@@ -80,6 +82,7 @@ class WebUIPlugin : public Plugin {
     long lastCleanup = 0;
     long lastDns = 0;
     bool updating = false;
+    bool otaCheckRequested = false;
     bool apMode = false;
     bool serverRunning = false;
     String updateComponent = "";

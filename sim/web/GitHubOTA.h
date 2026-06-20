@@ -18,7 +18,7 @@ class GitHubOTA {
         : _version(display_version) {}
 
     void init(NimBLEClient *) {}
-    void checkForUpdates() {}
+    bool checkForUpdates() { return true; }
     bool isUpdateAvailable(bool = false) const { return false; }
     String getCurrentVersion() const { return _version; }
     void update(bool = true, bool = true) {}
