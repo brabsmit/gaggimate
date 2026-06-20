@@ -28,6 +28,7 @@ channels:
           - $ref: '#/components/messages/StatusEvent'
           - $ref: '#/components/messages/OtaSettingsResponse'
           - $ref: '#/components/messages/OtaProgressEvent'
+          - $ref: '#/components/messages/OtaCheckResultEvent'
           - $ref: '#/components/messages/AutotuneResultEvent'
           - $ref: '#/components/messages/ProfilesListResponse'
           - $ref: '#/components/messages/ProfilesLoadResponse'
@@ -43,6 +44,7 @@ channels:
         oneOf:
           - $ref: '#/components/messages/OtaSettingsRequest'
           - $ref: '#/components/messages/OtaStartRequest'
+          - $ref: '#/components/messages/OtaCheckRequest'
           - $ref: '#/components/messages/AutotuneStartRequest'
           - $ref: '#/components/messages/ProfilesListRequest'
           - $ref: '#/components/messages/ProfilesLoadRequest'
@@ -122,6 +124,23 @@ components:
         progress:
           type: integer
       required: [tp, phase, progress]
+    OtaCheckResultPayload:
+      type: object
+      properties:
+        tp:
+          type: string
+          enum: ['evt:ota-check-result']
+        status:
+          type: string
+          enum: ['available', 'uptodate', 'busy', 'failed']
+          description: |
+            Result of a user-initiated update check (see req:ota-check).
+            `available` = a display or controller update is available;
+            `uptodate` = firmware is current; `busy` = a brew/steam/grind is
+            active so the check was not run; `failed` = the update server could
+            not be reached. Broadcast to all clients; only the client that sent
+            req:ota-check should react.
+      required: [tp, status]
     AutotuneResultPayload:
       type: object
       properties:
@@ -143,6 +162,9 @@ components:
     OtaProgressEvent:
       payload:
         $ref: '#/components/schemas/OtaProgressPayload'
+    OtaCheckResultEvent:
+      payload:
+        $ref: '#/components/schemas/OtaCheckResultPayload'
     AutotuneResultEvent:
       payload:
         $ref: '#/components/schemas/AutotuneResultPayload'
@@ -259,6 +281,20 @@ components:
             enum: ['req:ota-start']
           cp:
             type: string
+        required: [tp]
+    OtaCheckRequest:
+      payload:
+        type: object
+        properties:
+          tp:
+            type: string
+            enum: ['req:ota-check']
+          channel:
+            type: string
+            description: |
+              Optional update channel to check ('latest' or 'nightly'). When
+              present it is applied (and persisted) before the check; when
+              omitted the currently-configured channel is used.
         required: [tp]
     AutotuneStartRequest:
       payload:

@@ -31,6 +31,10 @@ export function OTA() {
   const [formData, setFormData] = useState({});
   const [phase, setPhase] = useState(0);
   const [progress, setProgress] = useState(0);
+  const [checkState, setCheckState] = useState('idle'); // idle|checking|uptodate|available|failed|busy|timeout
+  const checkTimeoutRef = useRef(null);
+  const checkRequestedRef = useRef(false);
+  const autoClearTimeoutRef = useRef(null);
   const rssi = machine.value.status.rssi;
   const lat = machine.value.status.lat;
 
@@ -67,6 +71,32 @@ export function OTA() {
     });
     return () => {
       apiService.off('evt:ota-progress', listenerId);
+    };
+  }, [apiService]);
+  useEffect(() => {
+    const listenerId = apiService.on('evt:ota-check-result', msg => {
+      if (!checkRequestedRef.current) return;
+      checkRequestedRef.current = false;
+      if (checkTimeoutRef.current) {
+        clearTimeout(checkTimeoutRef.current);
+        checkTimeoutRef.current = null;
+      }
+      const status = msg.status || 'idle';
+      setCheckState(status);
+      // Auto-clear transient feedback after 5s, except "available" which the
+      // persistent version display already reflects.
+      if (status !== 'available') {
+        if (autoClearTimeoutRef.current) clearTimeout(autoClearTimeoutRef.current);
+        autoClearTimeoutRef.current = setTimeout(() => {
+          autoClearTimeoutRef.current = null;
+          setCheckState(s => (s === status ? 'idle' : s));
+        }, 5000);
+      }
+    });
+    return () => {
+      apiService.off('evt:ota-check-result', listenerId);
+      if (checkTimeoutRef.current) clearTimeout(checkTimeoutRef.current);
+      if (autoClearTimeoutRef.current) clearTimeout(autoClearTimeoutRef.current);
     };
   }, [apiService]);
 
@@ -122,6 +152,25 @@ export function OTA() {
     setRebuilding(true);
     setRebuildProgress({ total: 0, current: 0, status: 'starting' });
     apiService.send({ tp: 'req:history:rebuild' });
+  }, [apiService]);
+  const onCheckUpdates = useCallback(() => {
+    checkRequestedRef.current = true;
+    setCheckState('checking');
+    // Include the currently-selected channel so the check honors the dropdown
+    // even if it hasn't been saved via the form's submit buttons. The <select>
+    // is uncontrolled, so read it from the form rather than stale formData.
+    const channel = formRef.current ? new FormData(formRef.current).get('channel') : null;
+    apiService.send(channel ? { tp: 'req:ota-check', channel } : { tp: 'req:ota-check' });
+    if (checkTimeoutRef.current) clearTimeout(checkTimeoutRef.current);
+    // The firmware check is a blocking TLS handshake measured at up to ~18s in
+    // bad cases, so wait past that before giving up. The timeout only exists for
+    // a dropped websocket — the firmware always emits a terminal event — so we
+    // do NOT clear checkRequestedRef here: a slow-but-successful result that
+    // arrives after the timeout still lands and corrects the pill.
+    checkTimeoutRef.current = setTimeout(() => {
+      checkTimeoutRef.current = null;
+      setCheckState(s => (s === 'checking' ? 'timeout' : s));
+    }, 25000);
   }, [apiService]);
 
   if (isLoading) {
@@ -311,6 +360,38 @@ export function OTA() {
             >
               Update Controller
             </button>
+            <button
+              type='button'
+              className='btn btn-outline'
+              onClick={onCheckUpdates}
+              disabled={checkState === 'checking' || submitting || formData.updating}
+            >
+              Check for Updates
+              {checkState === 'checking' && <Spinner size={4} className='ml-2' />}
+            </button>
+            {checkState !== 'idle' && checkState !== 'checking' && (
+              <span
+                className={`self-center rounded-md px-3 py-1.5 text-sm font-medium ${
+                  checkState === 'uptodate'
+                    ? 'bg-success text-success-content'
+                    : checkState === 'available'
+                      ? 'bg-info text-info-content'
+                      : checkState === 'busy'
+                        ? 'bg-warning text-warning-content'
+                        : 'bg-error text-error-content'
+                }`}
+              >
+                {checkState === 'uptodate'
+                  ? '✓ Up to date'
+                  : checkState === 'available'
+                    ? '⬆ Update available'
+                    : checkState === 'busy'
+                      ? '⏳ Finish your shot first'
+                      : checkState === 'timeout'
+                        ? '⚠ Check timed out — try again'
+                        : '⚠ Couldn’t reach the update server'}
+              </span>
+            )}
             <button type='button' className='btn btn-outline' onClick={downloadSupportData}>
               Download Support Data
             </button>

@@ -25,22 +25,28 @@ semver_t from_string(const string &version) {
         return {0, 0, 0, nullptr, nullptr};
     }
     auto numbers = split(version, '.');
-    auto major = atoi(numbers.at(0).c_str());
-    auto minor = atoi(numbers.at(1).c_str());
-    int patch;
+    // Tolerate version strings with fewer than three dotted segments (e.g. a
+    // remote release tag of "v2" or "v1.2"): missing minor/patch default to 0.
+    // Without this, numbers.at(1)/.at(2) throws std::out_of_range and aborts the
+    // device when checkForUpdates() parses a malformed upstream tag.
+    auto major = numbers.size() > 0 ? atoi(numbers.at(0).c_str()) : 0;
+    auto minor = numbers.size() > 1 ? atoi(numbers.at(1).c_str()) : 0;
+    int patch = 0;
     char *prerelease_ptr = nullptr;
 
-    auto split_at = numbers.at(2).find('-');
-    if (split_at != string::npos) {
-        patch = atoi(numbers.at(2).substr(0, split_at).c_str());
-        auto prerelease = numbers.at(2).substr(split_at + 1);
-        prerelease_ptr = (char *)malloc(prerelease.length() + 1);
-        if (prerelease_ptr != nullptr) {
-            prerelease.copy(prerelease_ptr, prerelease.length());
-            prerelease_ptr[prerelease.length()] = '\0';
+    if (numbers.size() > 2) {
+        auto split_at = numbers.at(2).find('-');
+        if (split_at != string::npos) {
+            patch = atoi(numbers.at(2).substr(0, split_at).c_str());
+            auto prerelease = numbers.at(2).substr(split_at + 1);
+            prerelease_ptr = (char *)malloc(prerelease.length() + 1);
+            if (prerelease_ptr != nullptr) {
+                prerelease.copy(prerelease_ptr, prerelease.length());
+                prerelease_ptr[prerelease.length()] = '\0';
+            }
+        } else {
+            patch = atoi(numbers.at(2).c_str());
         }
-    } else {
-        patch = atoi(numbers.at(2).c_str());
     }
 
     semver_t _ver = {major, minor, patch, nullptr, prerelease_ptr};

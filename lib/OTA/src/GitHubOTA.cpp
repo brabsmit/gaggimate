@@ -40,7 +40,7 @@ void GitHubOTA::init(NimBLEClient *client) {
     _controller_ota.init(client, [this](int progress) { _progress_callback(PHASE_CONTROLLER_FW, progress); });
 }
 
-void GitHubOTA::checkForUpdates() {
+bool GitHubOTA::checkForUpdates() {
     const char *TAG = "checkForUpdates";
 
     _latest_url = get_updated_base_url_via_redirect(_wifi_client, _release_url);
@@ -52,13 +52,14 @@ void GitHubOTA::checkForUpdates() {
         semver_str.replace("/", "");
         if (semver_str.substring(0, 1) != "v") {
             ESP_LOGW(TAG, "not a valid version URL");
-            return;
+            return false;
         }
         semver_str = semver_str.substring(1);
         ESP_LOGI(TAG, "semver_str %s\n", semver_str.c_str());
         _latest_version_string = semver_str;
         semver_free(&_latest_version);
         _latest_version = from_string(semver_str.c_str());
+        return true;
     } else {
         _latest_url = _release_url + "/";
         _latest_url.replace("tag", "download");
@@ -66,13 +67,14 @@ void GitHubOTA::checkForUpdates() {
 
         if (version.length() == 0) {
             ESP_LOGW(TAG, "version.txt did not return a valid version string");
-            return;
+            return false;
         }
 
         version = version.substring(1);
         _latest_version_string = version;
         semver_free(&_latest_version);
         _latest_version = from_string(version.c_str());
+        return true;
     }
 }
 

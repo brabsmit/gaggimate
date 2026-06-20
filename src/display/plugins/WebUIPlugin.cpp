@@ -124,10 +124,24 @@ void WebUIPlugin::loop() {
     // with it for memory. isActive() is the reliable "a process is running" signal. Subtraction
     // (not now > last + interval) keeps the interval check millis()-rollover-safe.
     if (!controller->isActive() && (lastUpdateCheck == 0 || now - lastUpdateCheck > UPDATE_CHECK_INTERVAL)) {
-        ota->checkForUpdates();
+        const bool ok = ota->checkForUpdates();
         pluginManager->trigger("ota:update:status", "value", ota->isUpdateAvailable());
         lastUpdateCheck = now;
-        updateOTAStatus(ota->getCurrentVersion());
+        updateOTAStatus();
+        if (otaCheckRequested) {
+            otaCheckRequested = false;
+            const char *status = !ok ? "failed"
+                                 : (ota->isUpdateAvailable(false) || ota->isUpdateAvailable(true)) ? "available"
+                                                                                                   : "uptodate";
+            emitOtaCheckResult(status);
+        }
+    } else if (otaCheckRequested && controller->isActive()) {
+        // A user-initiated check was queued (lastUpdateCheck=0) but a process
+        // started before the gated check could run. Report busy and drop the
+        // request so the flag can't ride to a later periodic check as a stale
+        // late result.
+        otaCheckRequested = false;
+        emitOtaCheckResult("busy");
     }
     if (now > lastStatus + STATUS_PERIOD && !ws.getClients().empty()) {
         lastStatus = now;
@@ -419,6 +433,8 @@ void WebUIPlugin::handleWebSocketData(AsyncWebSocket *server, AsyncWebSocketClie
                     handleOTASettings(client->id(), doc);
                 } else if (msgType == "req:ota-start") {
                     handleOTAStart(client->id(), doc);
+                } else if (msgType == "req:ota-check") {
+                    handleOTACheck(client->id(), doc);
                 } else if (msgType == "req:autotune-start") {
                     handleAutotuneStart(client->id(), doc);
                 } else if (msgType == "req:process:activate") {
@@ -495,7 +511,7 @@ void WebUIPlugin::handleOTASettings(uint32_t clientId, JsonDocument &request) {
             lastUpdateCheck = 0;
         }
     }
-    updateOTAStatus("Checking...");
+    updateOTAStatus();
 }
 
 void WebUIPlugin::handleOTAStart(uint32_t clientId, JsonDocument &request) {
@@ -505,6 +521,26 @@ void WebUIPlugin::handleOTAStart(uint32_t clientId, JsonDocument &request) {
     } else {
         updateComponent = "";
     }
+}
+
+void WebUIPlugin::handleOTACheck(uint32_t clientId, JsonDocument &request) {
+    // A user-initiated update check. Honor an (optional) channel selection so the
+    // check reflects the channel chosen in the UI, persisting it the same way
+    // handleOTASettings does. This also gives the UI a way to switch channels
+    // without an update already being available to enable the form's submit.
+    if (!request["channel"].isNull()) {
+        controller->getSettings().setOTAChannel(request["channel"].as<String>() == "latest" ? "latest" : "nightly");
+        ota->setReleaseUrl(RELEASE_URL + (controller->getSettings().getOTAChannel() == "latest" ? "latest" : "tag/nightly"));
+    }
+    // The blocking TLS handshake runs in loop() gated on !isActive(); here we
+    // just force the next tick to run it. If a process is active we cannot check
+    // now — tell the UI rather than silently deferring until the shot ends.
+    if (controller->isActive()) {
+        emitOtaCheckResult("busy");
+        return;
+    }
+    lastUpdateCheck = 0;
+    otaCheckRequested = true;
 }
 
 void WebUIPlugin::handleAutotuneStart(uint32_t clientId, JsonDocument &request) {
@@ -892,7 +928,7 @@ void WebUIPlugin::handleBLEScaleInfo(AsyncWebServerRequest *request) {
     request->send(response);
 }
 
-void WebUIPlugin::updateOTAStatus(const String &version) {
+void WebUIPlugin::updateOTAStatus() {
     if (ws.getClients().empty()) {
         return;
     }
@@ -956,6 +992,16 @@ void WebUIPlugin::updateOTAProgress(uint8_t phase, int progress) {
     doc["tp"] = "evt:ota-progress";
     doc["phase"] = phase;
     doc["progress"] = progress;
+    broadcastJson(doc);
+}
+
+void WebUIPlugin::emitOtaCheckResult(const char *status) {
+    if (ws.getClients().empty()) {
+        return;
+    }
+    JsonDocument doc(&psramAllocator);
+    doc["tp"] = "evt:ota-check-result";
+    doc["status"] = status;
     broadcastJson(doc);
 }
 
